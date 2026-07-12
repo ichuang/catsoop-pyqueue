@@ -36,9 +36,9 @@ entries appear, get claimed, etc. in real time.
 Running against CAT-SOOP
 ------------------------
 
-1. Create an API token for a queue user exactly as described in the
-   original [catsoop-queue README](../catsoop-queue/README.md) step 4,
-   and put it in `config/passwords.py`:
+1. Set up the queue user (`__queue_user__`) and its API token — see
+   "Setting up the queue user and API token" below — and put the token
+   in `config/passwords.py`:
 
    ```python
    catsoop = 'YOUR_QUEUE_USER_CATSOOP_API_TOKEN'
@@ -48,9 +48,136 @@ Running against CAT-SOOP
    ...).  Local overrides can go in `config/dev_params.py` as a
    `PARAMS` dict, which is merged over the defaults.
 
-3. Run `python3 -m pyqueue` and reverse-proxy it as before (the
-   WebSocket endpoint is `/ws`; make sure your proxy passes `Upgrade`
-   headers).
+3. Run `python3 -m pyqueue` and reverse-proxy it — see "Proxying
+   behind nginx" below.
+
+Proxying behind nginx
+---------------------
+
+In production the queue server sits behind nginx on the same host as
+CAT-SOOP, reachable under a path prefix such as `/queue`.  Add a
+location block to your nginx config (alongside the one that proxies
+CAT-SOOP itself):
+
+```nginx
+location /queue/ {
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_cache_bypass $http_upgrade;
+    proxy_pass http://localhost:3100;
+}
+```
+
+Notes:
+
+* The three `Upgrade`/`Connection`/`proxy_http_version` lines are
+  required — the queue's real-time updates run over a WebSocket at
+  `<url_root>/ws`, and without them nginx silently downgrades the
+  upgrade request and every client shows the "Disconnected!" banner.
+
+* With `proxy_pass http://localhost:3100;` (no trailing slash or path),
+  nginx forwards the `/queue` prefix through to the queue server.
+  That works out of the box: the server strips prefixes listed in
+  `URL_PREFIXES` in `config/params.py` (default `['/queue']`) before
+  resolving static files, and accepts the WebSocket upgrade on any
+  path.  If your prefix is something else (say `/help-queue`), either
+  add it to `URL_PREFIXES`, or make nginx strip it by using a trailing
+  slash on both directives (`location /help-queue/ { ...
+  proxy_pass http://localhost:3100/; }`).
+
+* Set `queue_url_root` in the CAT-SOOP plugin's `post_load.py` (and
+  `URL_ROOT` in `config/params.py`) to the public prefix — e.g.
+  `/queue` — so pages load `<prefix>/js/queue.js`,
+  `<prefix>/css/queue.css`, and connect to `ws(s)://<host><prefix>/ws`.
+  With a path prefix like this, the frontend automatically picks `ws:`
+  or `wss:` to match the page, so the queue works unchanged when the
+  site is served over HTTPS.
+
+* Keep the queue server bound to localhost (`SERVER.HOST =
+  '127.0.0.1'`, the default) so it is only reachable through nginx.
+
+* To sanity-check the proxy: `curl -i https://your-host/queue/js/queue.js`
+  should return 200, and a request for a missing file (e.g.
+  `/queue/js/nope.js`) shows up in the queue server's `logs/warn.log`
+  with the exact URL received — if the logged path still contains an
+  unexpected prefix, add it to `URL_PREFIXES`.
+
+Setting up the queue user and API token
+---------------------------------------
+
+The queue authenticates users and submits checkoffs on behalf of a
+service account in your course, conventionally named `__queue_user__`.
+Two pieces of setup are needed, and missing either one produces a
+confusing half-working state:
+
+**1. An API token registered to `__queue_user__`.**  This token is the
+shared secret between CAT-SOOP and the queue server: the queue plugin's
+`post_load.py` signs each user's identity with it (via
+`csm_api.get_api_tokens(globals(), "__queue_user__")`), the queue
+server verifies those signatures with the copy in
+`config/passwords.py`, and the checkoff question type resolves the
+token back to `__queue_user__` when a checkoff is submitted.  The token
+must therefore actually be *registered in CAT-SOOP's token store* —
+just inventing a string and putting the same value in both configs lets
+logins work but breaks checkoffs, because CAT-SOOP's
+`userinfo_from_token` won't know who owns it.
+
+The cleanest way to register one is an admin-only CAT-SOOP page.  Drop
+something like this in your course (e.g. as a `<python>` block on a
+staff-only page, or a `queue/get_token` page), load it once as an
+Admin, and copy the printed token into `config/passwords.py`:
+
+```python
+# Generate and register an API token for the queue user (__queue_user__).
+# Admin-only.  Prints the token that goes in catsoop-pyqueue's
+# config/passwords.py.
+
+import secrets
+import string
+
+if cs_user_info.get("role") != "Admin":
+    print("Sorry, only Admins may generate queue user API tokens.")
+else:
+    api_tokens = csm_api.get_api_tokens(globals(), "__queue_user__")
+    if api_tokens:
+        print("queue user api_tokens =", api_tokens)
+    else:
+        alphabet = string.ascii_letters + string.digits
+        tok = "".join(secrets.choice(alphabet) for _ in range(40))
+
+        # The same two store writes as catsoop.api.new_api_token, but
+        # with our own token value: register the token -> username
+        # mapping and add the token to the user's token list.
+        csm_cslog.overwrite_log("_api_tokens", [], tok, "__queue_user__")
+        csm_cslog.update_log("_api_users", [], "__queue_user__", tok)
+
+        print("new token for __queue_user__:", tok)
+```
+
+(Alternatively, `csm_api.initialize_api_token(globals(), {'username':
+'__queue_user__', 'name': 'Queue User', 'email': 'x@x'})` registers and
+returns a CAT-SOOP-generated random token.)
+
+**2. Appropriate privileges for `__queue_user__`, usually via a
+role.**  The built-in `checkoff` question type only accepts a checkoff
+when the submitting token's owner has the `impersonate` permission (and
+the staff member named in the submission has `checkoff`).  Give the
+queue user a role that carries those permissions in your course's
+`cs_permissions` — TA is typical — by creating
+`$COURSE/__USERS__/__queue_user__.py`:
+
+```python
+role = 'TA'
+full_name = 'Queue User'
+```
+
+Without this, staff can claim entries and click "checkoff", but the
+CAT-SOOP page rejects the submission with "You must receive this
+checkoff from a staff member."
 
 Wire protocol
 -------------

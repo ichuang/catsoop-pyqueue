@@ -40,7 +40,6 @@ PARAMS = {
         # lookups; the current signed-auth flow (catsoop.plugins
         # .queue.auth from the plugin's post_load.py) is verified
         # locally against TOKEN with no API call.
-        # 'API_ROOT': 'https://introml.odl.mit.edu/cat-soop/_util/api',
         'API_ROOT': 'http://localhost:7667/_util/api',
 
         # Maximum accepted age (seconds) of a signed auth blob's

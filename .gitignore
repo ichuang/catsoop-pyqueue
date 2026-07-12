@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+data/
+logs/
+config/passwords.py
+config/dev_params.py

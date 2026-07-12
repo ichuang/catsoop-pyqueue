@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Queue</title>
+<style>
+  body { font-family: -apple-system, "Helvetica Neue", Arial, sans-serif;
+         margin: 1.5em auto; max-width: 60em; padding: 0 1em; }
+</style>
+</head>
+<body>
+<!--
+  A test harness for www/js/queue.js: stubs the `catsoop` globals that a
+  CAT-SOOP page would define, so the full frontend can be exercised
+  against a pyqueue server running in dev mode (python -m pyqueue &dash;&dash;dev).
+
+  Query parameters:
+    username  (default ta1)
+    role      (default TA)
+    view      staff_view | student_static | student_popup  (default staff_view)
+    room      (default 'default')
+    signed=1  authenticate with a signed auth blob (built the same way
+              the CAT-SOOP queue plugin's post_load.py builds
+              catsoop.plugins.queue.auth) instead of a dev-mode
+              {username, role} object
+    token     the queue user's API token to sign with (default
+              'testtoken'; must match CATSOOP.TOKEN in the server
+              config for signed mode to verify)
+-->
+<h3 id="test-banner"></h3>
+<div id="queue-container"></div>
+
+<script>
+  const qs = new URLSearchParams(window.location.search);
+  const username = qs.get('username') || 'ta1';
+  const role = qs.get('role') || 'TA';
+  const view = qs.get('view') || 'staff_view';
+  const signed = qs.get('signed') === '1';
+
+  document.getElementById('test-banner').textContent =
+      username + ' (' + role + ') — ' + view + (signed ? ' [signed auth]' : '');
+
+  window.catsoop = {
+      course: 'dev',
+      this_path: '/dev/lab1',
+      path_info: ['dev', 'lab1'],
+      this_page: null,
+      plugins: {
+          queue: {
+              url_root: '/',
+              is_staff: role !== 'Student' && role !== 'Guest',
+              container: view === 'student_popup' ? 'body' : '#queue-container',
+              view: view,
+              room: qs.get('room') || 'default',
+              auth: null,  // filled in below
+          },
+      },
+      // auto-confirm dialogs so lock/clear are testable
+      modal: (title, body, input, cancelable) => Promise.resolve(true),
+  };
+
+  window.queue_www_params = {
+      SHOW_STAFF_LIST: true,
+  };
+
+  // Build the signed auth blob the same way the CAT-SOOP queue
+  // plugin's post_load.py does.
+  async function signed_auth(user_info, token) {
+      const enc = new TextEncoder();
+      user_info.queue_timestamp = Date.now() / 1000;
+      const payload = btoa(JSON.stringify(user_info));
+
+      const token_digest = await crypto.subtle.digest('SHA-256', enc.encode(token));
+      const hex = Array.from(new Uint8Array(token_digest))
+          .map(b => b.toString(16).padStart(2, '0')).join('');
+      const key = await crypto.subtle.importKey(
+          'raw', enc.encode(hex), {name: 'HMAC', hash: 'SHA-256'},
+          false, ['sign']);
+      const sig = await crypto.subtle.sign('HMAC', key, enc.encode(payload));
+      const verifier = Array.from(new Uint8Array(sig))
+          .map(b => b.toString(16).padStart(2, '0')).join('');
+
+      return btoa(JSON.stringify({payload, verifiers: [verifier]}));
+  }
+
+  async function start() {
+      if (signed) {
+          catsoop.plugins.queue.auth = await signed_auth(
+              {username, role, name: username},
+              qs.get('token') || 'testtoken');
+      }
+      else {
+          // dev-mode auth: the server trusts this object when
+          // CATSOOP.API_ROOT is unset (--dev)
+          catsoop.plugins.queue.auth = {username, role};
+      }
+      const script = document.createElement('script');
+      script.src = 'js/queue.js';
+      document.head.appendChild(script);
+  }
+
+  start();
+</script>
+</body>
+</html>

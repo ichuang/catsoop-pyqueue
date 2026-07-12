@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>CAT-SOOP pyqueue demo</title>
+<style>
+  body { font-family: -apple-system, "Helvetica Neue", Arial, sans-serif;
+         margin: 2em auto; max-width: 54em; padding: 0 1em; color: #222; }
+  h1 { font-size: 1.4em; }
+  fieldset { border: 1px solid #ccc; border-radius: 6px; margin-bottom: 1em; }
+  table { border-collapse: collapse; width: 100%; margin-top: .5em; }
+  th, td { border: 1px solid #ddd; padding: .4em .6em; text-align: left; font-size: .9em; }
+  th { background: #f5f5f5; }
+  button { margin-right: .3em; }
+  #status { font-style: italic; color: #666; }
+  .claimed { background: #fff6e0; }
+  code { background: #f2f2f2; padding: 0 .2em; }
+</style>
+</head>
+<body>
+<h1>CAT-SOOP pyqueue demo</h1>
+<p id="status">Not connected. This page uses dev-mode auth: run the server
+with <code>python -m pyqueue --dev</code>.</p>
+
+<fieldset>
+  <legend>Log in</legend>
+  <label>Username <input id="username" value="student1"></label>
+  <label>Role
+    <select id="role">
+      <option>Student</option><option>SLA</option><option>LA</option>
+      <option>UTA</option><option selected>TA</option>
+      <option>Instructor</option><option>Admin</option>
+    </select>
+  </label>
+  <label>Room <input id="room" value="default" size="8"></label>
+  <button onclick="login()">Log in</button>
+</fieldset>
+
+<fieldset>
+  <legend>Actions</legend>
+  <label>Location <input id="location" value="table 4" size="8"></label>
+  <button onclick="add()">Ask for help</button>
+  <button onclick="client && client.remove().then(refresh)">Remove my entry</button>
+  <button onclick="client && client.lock().then(refreshLock)">Lock</button>
+  <button onclick="client && client.unlock().then(refreshLock)">Unlock</button>
+  <button onclick="client && client.clear().then(refresh)">Clear</button>
+  <span id="lock-state"></span>
+</fieldset>
+
+<div id="queue">
+  <table>
+    <thead><tr><th>#</th><th>Who</th><th>Location</th><th>State</th><th>Claimed by</th><th>Actions</th></tr></thead>
+    <tbody id="entries"></tbody>
+  </table>
+</div>
+
+<p>Staff checked in: <span id="staff"></span></p>
+
+<script src="js/client.js"></script>
+<script>
+let client = null;
+let entries = [];
+
+function login() {
+    if (client) client.close();
+    client = new QueueClient({room: document.getElementById('room').value});
+    client.recv('edit', onEdit);
+    client.recv('locked', locked => showLock(locked));
+    client.recv('staff_list', () => refreshStaff());
+    client.login({
+        username: document.getElementById('username').value,
+        role: document.getElementById('role').value,
+    }, auth => {
+        document.getElementById('status').textContent = auth.error
+            ? 'Auth failed: ' + auth.error
+            : 'Logged in as ' + auth.username + ' [' + auth.permissions.join(', ') + ']';
+        refresh(); refreshLock(); refreshStaff();
+    });
+}
+
+function add() {
+    client.add('help', {
+        location: document.getElementById('location').value,
+        assignment: {name: 'demo', display_name: 'Demo question'},
+    }).then(res => { if (!res.success) alert('The queue is locked.'); });
+}
+
+function onEdit(msg) {
+    const dirty = msg.edited_entries.map(e => e.username).concat(msg.deleted_usernames);
+    entries = entries.filter(e => !dirty.includes(e.username))
+        .concat(msg.edited_entries).concat(msg.added_entries);
+    render();
+}
+
+function refresh() {
+    client.get_entries().then(all => { entries = all; render(); });
+}
+
+function refreshLock() { client.is_locked().then(showLock); }
+function showLock(locked) {
+    document.getElementById('lock-state').textContent = locked ? '🔒 locked' : '🔓 unlocked';
+}
+
+function refreshStaff() {
+    client.get_staff_list().then(({confirmed, unconfirmed}) => {
+        document.getElementById('staff').textContent =
+            confirmed.join(', ') + (unconfirmed.length ? ' (logged in: ' + unconfirmed.join(', ') + ')' : '');
+    });
+}
+
+function render() {
+    entries.sort((a, b) => a.date_added < b.date_added ? -1 : 1);
+    const tbody = document.getElementById('entries');
+    tbody.innerHTML = '';
+    entries.forEach((entry, i) => {
+        const tr = document.createElement('tr');
+        if (entry.data.claimant) tr.className = 'claimed';
+        const who = entry.real_name || entry.username.slice(0, 12);
+        const cells = [i + 1, who, entry.data.location || '',
+                       entry.data.state || '', entry.data.claimant_real_name || entry.data.claimant || ''];
+        cells.forEach(text => {
+            const td = document.createElement('td');
+            td.textContent = text;
+            tr.appendChild(td);
+        });
+        const td = document.createElement('td');
+        (entry.actions || []).forEach(action => {
+            const btn = document.createElement('button');
+            btn.textContent = action;
+            btn.onclick = () => client.action(action, {username: entry.username}).then(refresh);
+            td.appendChild(btn);
+        });
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+    });
+}
+</script>
+</body>
+</html>

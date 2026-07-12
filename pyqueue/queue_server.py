@@ -191,9 +191,15 @@ class QueueApp:
             await self._handle_socket(ws)
         else:
             try:
-                await serve_static(writer, self.params['WWW_ROOT'], target)
-            except Exception:
-                pass
+                status = await serve_static(writer, self.params['WWW_ROOT'],
+                                            target)
+                if not status.startswith('200'):
+                    method = request_line.split(' ')[0]
+                    self.log.warning(
+                        'static request failed: %s -- %s %s (WWW_ROOT=%s)',
+                        status, method, target, self.params['WWW_ROOT'])
+            except Exception as err:
+                self.log.error('error serving %r: %r', target, err)
             writer.close()
 
     async def _handle_socket(self, ws):

@@ -214,18 +214,26 @@ def _http_response(status, body=b'', content_type='text/plain'):
 
 
 async def serve_static(writer, root, target):
-    """Serve a file under ``root`` for the request target ``target``."""
+    """Serve a file under ``root`` for the request target ``target``.
+
+    Returns the response status line ('200 OK', '404 Not Found',
+    '403 Forbidden') so the caller can log failures.
+    """
     path = urllib.parse.unquote(urllib.parse.urlsplit(target).path)
     if path.endswith('/'):
         path += 'index.html'
     root = os.path.abspath(root)
     full = os.path.abspath(os.path.join(root, path.lstrip('/')))
     if not (full == root or full.startswith(root + os.sep)):
-        writer.write(_http_response('403 Forbidden', b'403'))
+        status = '403 Forbidden'
+        writer.write(_http_response(status, b'403'))
     elif not os.path.isfile(full):
-        writer.write(_http_response('404 Not Found', b'404'))
+        status = '404 Not Found'
+        writer.write(_http_response(status, b'404'))
     else:
+        status = '200 OK'
         ctype = mimetypes.guess_type(full)[0] or 'application/octet-stream'
         with open(full, 'rb') as f:
-            writer.write(_http_response('200 OK', f.read(), ctype))
+            writer.write(_http_response(status, f.read(), ctype))
     await writer.drain()
+    return status

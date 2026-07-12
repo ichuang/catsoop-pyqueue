@@ -192,7 +192,7 @@ class QueueApp:
         else:
             try:
                 status = await serve_static(writer, self.params['WWW_ROOT'],
-                                            target)
+                                            self._strip_prefix(target))
                 if not status.startswith('200'):
                     method = request_line.split(' ')[0]
                     self.log.warning(
@@ -201,6 +201,18 @@ class QueueApp:
             except Exception as err:
                 self.log.error('error serving %r: %r', target, err)
             writer.close()
+
+    def _strip_prefix(self, target):
+        """Drop a configured URL prefix (e.g. '/queue') from a request
+        target, so the server answers both /queue/* and /* when proxied
+        behind nginx without the prefix stripped."""
+        path, sep, query = target.partition('?')
+        for prefix in self.params.get('URL_PREFIXES') or []:
+            prefix = prefix.rstrip('/')
+            if prefix and (path == prefix or path.startswith(prefix + '/')):
+                path = path[len(prefix):] or '/'
+                break
+        return path + sep + query
 
     async def _handle_socket(self, ws):
         self.log.debug('incoming socket connection')

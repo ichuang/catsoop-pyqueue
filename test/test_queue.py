@@ -32,6 +32,7 @@ def test_params(catsoop_url):
         'CATSOOP': {'TOKEN': 'testtoken', 'API_ROOT': catsoop_url},
         'STAFF_CHECK_IN_REQUIRED': False,
         'URL_ROOT': '/',
+        'URL_PREFIXES': ['/queue'],
         'ROOMS': ['default', 'other'],
         'PRINT_LOGS': False,
         'LOG_DIR': None,
@@ -345,6 +346,25 @@ class QueueTest(unittest.IsolatedAsyncioTestCase):
         await staff.check_in('alice')
         staff_list = await staff.get_staff_list()
         self.assertNotIn('alice', staff_list['confirmed'])
+
+    ## Static files
+
+    async def test_static_url_prefix(self):
+        import urllib.request
+
+        def status(path):
+            url = 'http://127.0.0.1:%d%s' % (self.app.port, path)
+            try:
+                with urllib.request.urlopen(url) as res:
+                    return res.status
+            except urllib.error.HTTPError as err:
+                return err.code
+
+        # /queue/* is served the same as /* (nginx forwards the prefix)
+        self.assertEqual(await asyncio.to_thread(status, '/css/queue.css'), 200)
+        self.assertEqual(await asyncio.to_thread(status, '/queue/css/queue.css'), 200)
+        self.assertEqual(await asyncio.to_thread(status, '/queue/js/client.js'), 200)
+        self.assertEqual(await asyncio.to_thread(status, '/queue/nope.js'), 404)
 
     ## Checkoffs
 

@@ -56,6 +56,12 @@ PARAMS = {
     # The publicly accessible URL of the queue (the reverse-proxy route).
     'URL_ROOT': '/queue/fall18/',
 
+    # URL prefixes stripped from incoming request paths, so the server
+    # answers /queue/* the same as /* when a reverse proxy forwards
+    # requests without removing the prefix.  (WebSocket upgrades work
+    # on any path regardless.)
+    'URL_PREFIXES': ['/queue'],
+
     # The rooms this queue covers; at least one name.  Every room a
     # CAT-SOOP page may pass as queue_room must be listed here, or
     # authentication for that page fails with "bad room".  'default' is

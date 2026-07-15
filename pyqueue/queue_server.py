@@ -33,6 +33,7 @@ class QueueApp:
                                params['CATSOOP'].get('TOKEN'))
         self.server = None
         self.port = None
+        self._connections = set()  # live WebSockets, closed on stop()
 
         rooms = params['ROOMS']
         self.SOCKETS = {room: {} for room in rooms}
@@ -188,7 +189,18 @@ class QueueApp:
                 writer.close()
                 return
             ws = WebSocket(reader, writer)
-            await self._handle_socket(ws)
+            self._connections.add(ws)
+            try:
+                await self._handle_socket(ws)
+            except Exception as err:
+                self.log.error('socket handler error: %r', err)
+            finally:
+                # Close the transport deterministically: on Python
+                # 3.12.1+ Server.wait_closed() waits for every accepted
+                # connection to be closed, so relying on GC to close
+                # abandoned sockets makes stop() hang.
+                self._connections.discard(ws)
+                await ws.close()
         else:
             try:
                 status = await serve_static(writer, self.params['WWW_ROOT'],
@@ -284,9 +296,18 @@ class QueueApp:
             user['confirmed'] = False
             self.USERS[username] = user
 
+        # On re-authentication, drop the socket's previous registration
+        # (possibly under another user/room) so it is never listed twice.
+        if state['user'] is not None:
+            old = self.SOCKETS[state['room']].get(state['user']['username'], [])
+            if ws in old:
+                old.remove(ws)
+
         state['user'] = user
         state['room'] = room
-        self.SOCKETS[room].setdefault(username, []).append(ws)
+        sockets = self.SOCKETS[room].setdefault(username, [])
+        if ws not in sockets:
+            sockets.append(ws)
 
         if authentication.is_staff(user):
             if 'auto_check_in' in user['permissions']:
@@ -419,6 +440,10 @@ class QueueApp:
     async def stop(self):
         if self.server is not None:
             self.server.close()
+            # Close every live connection so their handlers finish;
+            # wait_closed() (3.12.1+) waits for all of them.
+            for ws in list(self._connections):
+                await ws.close()
             await self.server.wait_closed()
 
     async def serve_forever(self):

@@ -140,21 +140,54 @@ class CheckoffEntry(Entry):
         super().__init__(doc, ctx)
         self._group = None
 
-    def group(self):
-        # Fetched once per entry, lazily: entries may be constructed at
-        # startup (from persisted state) before the event loop runs.
-        if self._group is None:
+    @staticmethod
+    def data_skeleton(data, user):
+        # Keep the group the CAT-SOOP plugin computed at add time; it
+        # is the fallback when the server-side lookup finds no group.
+        skeleton = Entry.data_skeleton(data, user)
+        skeleton['group'] = data.get('group')
+        return skeleton
+
+    def update(self, doc):
+        super().update(doc)
+        # The document changed (e.g. a re-add merged new data): drop
+        # any cached group so the next render/checkoff re-fetches it.
+        self._group = None
+
+    def group(self, refresh=False):
+        # Fetched lazily (entries may be constructed at startup, from
+        # persisted state, before the event loop runs) and cached until
+        # the entry changes or a refresh is forced.
+        if refresh or self._group is None:
             self._group = asyncio.ensure_future(self._fetch_group())
         return self._group
 
     async def _fetch_group(self):
-        try:
-            return await self.ctx.catsoop.post('/groups/get_my_group', {
-                'path': json.dumps((self.data.get('assignment') or {}).get('path')),
-                'as': self.username,
-            })
-        except Exception:
-            return {'members': [self.username]}
+        # Primary source: CAT-SOOP's groups store (authoritative; this
+        # is what the self_partner question type writes to).
+        if self.ctx.catsoop.api_root:
+            try:
+                return await self.ctx.catsoop.post('/groups/get_my_group', {
+                    'path': json.dumps(
+                        (self.data.get('assignment') or {}).get('path')),
+                    'as': self.username,
+                })
+            except Exception as err:
+                self.ctx.log.warning(
+                    'group lookup failed for %s: %r', self.username, err)
+
+        # Fallback: the (client-supplied) group sent with the add
+        # message by the queue plugin's checkoff button.
+        supplied = (self.data.get('group') or {}).get('members') or []
+        if len(supplied) > 1:
+            members = list(supplied)
+            if self.username not in members:
+                members.insert(0, self.username)
+            self.ctx.log.info('using client-supplied group for %s: %r',
+                              self.username, members)
+            return {'members': members}
+
+        return {'members': [self.username]}
 
     def visible_to(self, user):
         return (user.get('username') == self.username
@@ -206,7 +239,9 @@ class CheckoffEntry(Entry):
     async def group_checkoff(self, user):
         if 'checkoff' not in user.get('permissions', ()):
             return
-        group = await self.group()
+        # Re-fetch: the group may have been formed after the entry was
+        # added, and stale cached lookups must not shrink the checkoff.
+        group = await self.group(refresh=True)
         await asyncio.gather(*(
             self.ctx.catsoop.submit(self.data['assignment']['page'],
                                     self._submit_form(member, user))

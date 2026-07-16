@@ -37,8 +37,15 @@ class MockCatsoop:
                     else:
                         res = {'ok': False, 'error': 'mock error message'}
                 elif self.path == '/groups/get_my_group':
-                    res = {'ok': True,
-                           'members': [form['as'], form['as'] + '-partner']}
+                    # A path of ["nogroup"] simulates a student who has
+                    # not formed a group in CAT-SOOP's groups store.
+                    if json.loads(form.get('path') or 'null') == ['nogroup']:
+                        res = {'ok': False,
+                               'error': '%s has not been assigned to a group'
+                                        % form['as']}
+                    else:
+                        res = {'ok': True,
+                               'members': [form['as'], form['as'] + '-partner']}
                 elif self.path == '/assignments/0':
                     mock.submissions.append(form)
                     names = json.loads(form['names'])

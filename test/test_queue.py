@@ -407,6 +407,60 @@ class QueueTest(unittest.IsolatedAsyncioTestCase):
                          ['alice'])
         self.assertEqual(await staff.get_entries(), [])
 
+    async def test_group_checkoff_falls_back_to_client_group(self):
+        # No group in the server-side store, but the CAT-SOOP plugin
+        # sent one with the add message (computed at add time).
+        student = await self.user('alice', 'Student')
+        staff = await self.user('ta1', 'TA')
+        data = self.help_data()
+        data['assignment']['path'] = ['nogroup']
+        data['group'] = {'members': ['alice', 'bob']}
+        await student.add('checkoff', data)
+        await staff.action('claim', {'username': 'alice'})
+        await self.settle()
+
+        [entry] = await staff.get_entries()
+        self.assertEqual([m['username'] for m in entry['data']['group']],
+                         ['alice', 'bob'])
+
+        await staff.action('group_checkoff', {'username': 'alice'})
+        await self.settle()
+        self.assertEqual(sorted(s['as'] for s in self.catsoop.submissions),
+                         ['alice', 'bob'])
+        self.assertEqual(await staff.get_entries(), [])
+
+    async def test_group_checkoff_without_any_group(self):
+        # No server-side group and no client-supplied group: the
+        # checkoff degrades to just the requester.
+        student = await self.user('alice', 'Student')
+        staff = await self.user('ta1', 'TA')
+        data = self.help_data()
+        data['assignment']['path'] = ['nogroup']
+        await student.add('checkoff', data)
+        await staff.action('claim', {'username': 'alice'})
+        await self.settle()
+
+        await staff.action('group_checkoff', {'username': 'alice'})
+        await self.settle()
+        self.assertEqual([s['as'] for s in self.catsoop.submissions],
+                         ['alice'])
+
+    async def test_server_group_wins_over_client_group(self):
+        # When the server-side store has a group, the client-supplied
+        # one is ignored (it is not authoritative).
+        student = await self.user('alice', 'Student')
+        staff = await self.user('ta1', 'TA')
+        data = self.help_data()
+        data['group'] = {'members': ['alice', 'mallory']}
+        await student.add('checkoff', data)
+        await staff.action('claim', {'username': 'alice'})
+        await self.settle()
+
+        await staff.action('group_checkoff', {'username': 'alice'})
+        await self.settle()
+        self.assertEqual(sorted(s['as'] for s in self.catsoop.submissions),
+                         ['alice', 'alice-partner'])
+
     async def test_checkoff_hidden_from_other_students(self):
         alice = await self.user('alice', 'Student')
         bob = await self.user('bob', 'Student')
